@@ -1,6 +1,7 @@
 const std = @import("std");
 const db = @import("db.zig");
 const auth = @import("auth.zig");
+const signaling = @import("signaling.zig");
 
 // Global DB pool — initialized once at startup
 var global_pool: ?db.Pool = null;
@@ -20,6 +21,10 @@ pub fn run(allocator: std.mem.Allocator, port: u16) !void {
         null;
     };
     defer if (global_pool) |*pool| pool.deinit();
+
+    // Init WebRTC signaling hub
+    signaling.initHub(allocator);
+    std.debug.print("Signaling hub initialized\n", .{});
 
     const address = try std.net.Address.parseIp("0.0.0.0", port);
     var listener = try address.listen(.{ .reuse_address = true });
@@ -269,8 +274,6 @@ fn getMime(path: []const u8) []const u8 {
 }
 
 fn handleWebSocketUpgrade(allocator: std.mem.Allocator, stream: std.net.Stream, request: []const u8, path: []const u8) !void {
-    _ = allocator;
-
     const key_prefix = "Sec-WebSocket-Key: ";
     const key_start = std.mem.indexOf(u8, request, key_prefix) orelse {
         _ = try stream.write("HTTP/1.1 400 Bad Request\r\n\r\n");
@@ -300,16 +303,7 @@ fn handleWebSocketUpgrade(allocator: std.mem.Allocator, stream: std.net.Stream, 
     _ = try stream.write(response);
 
     std.debug.print("WebSocket connected: {s}\n", .{path});
-    handleWebSocketSession(stream) catch {};
-}
 
-fn handleWebSocketSession(stream: std.net.Stream) !void {
-    var buf: [4096]u8 = undefined;
-    while (true) {
-        const n = stream.read(&buf) catch break;
-        if (n == 0) break;
-        const opcode = buf[0] & 0x0F;
-        if (opcode == 0x8) break; // Close
-        _ = stream.write(buf[0..n]) catch break;
-    }
+    // Hand off to signaling hub
+    signaling.handleSession(allocator, stream, path);
 }
